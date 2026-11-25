@@ -79,34 +79,41 @@ async function api(path, body){
   if(body){o.headers={'Content-Type':'application/json'};o.body=JSON.stringify(body);}
   const r = await fetch(path,o); return r.json();
 }
-function riskClass(r){return 'pill risk-'+(r||'low');}
+function riskClass(r){return 'pill risk-'+(['low','medium','high'].includes(r)?r:'low');}
+// Everything shown here can contain model output or operator text: escape it.
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let PENDING = [];
 
 async function refresh(){
   const s = await api('/state');
+  PENDING = s.pending;
   $('#killState').textContent = s.kill?'HALTED':'running';
   $('#killState').className = 'pill '+(s.kill?'risk-high':'risk-low');
-  $('#agents').innerHTML = s.agents.map(a=>`<div class="agent"><span>${a.title}</span><span class="${riskClass(a.risk)}">${a.risk}</span></div>`).join('');
-  $('#handoffs').innerHTML = s.open_handoffs.length? s.open_handoffs.map(h=>`<div class="log">${h.id}: ${h.from_agent}→${h.to_agent} <span class="mut">(${h.intent})</span></div>`).join('') : '—';
+  $('#agents').innerHTML = s.agents.map(a=>`<div class="agent"><span>${esc(a.title)}</span><span class="${riskClass(a.risk)}">${esc(a.risk)}</span></div>`).join('');
+  $('#handoffs').innerHTML = s.open_handoffs.length? s.open_handoffs.map(h=>`<div class="log">${esc(h.id)}: ${esc(h.from_agent)}→${esc(h.to_agent)} <span class="mut">(${esc(h.intent)})</span></div>`).join('') : '—';
   $('#pending').innerHTML = s.pending.length? s.pending.map(p=>pendingHtml(p)).join('') : '<span class="mut">None</span>';
-  $('#decisions').innerHTML = s.decisions.length? s.decisions.slice().reverse().map(d=>`<div class="log"><b>${d.status}</b> · ${d.summary.slice(0,90)}…</div>`).join('') : '—';
-  $('#cost').innerHTML = `<div class="log">model ${s.cost.model} · total $${s.cost.total_usd}</div>`;
-  $('#activity').innerHTML = s.activity.slice().reverse().map(a=>`<div class="log">${a.ts.slice(11)} [${a.agent}] ${a.event} ${a.detail?('· '+a.detail.slice(0,50)):''}</div>`).join('');
+  $('#decisions').innerHTML = s.decisions.length? s.decisions.slice().reverse().map(d=>`<div class="log"><b>${esc(d.status)}</b> · ${esc(d.summary.slice(0,90))}…</div>`).join('') : '—';
+  $('#cost').innerHTML = `<div class="log">model ${esc(s.cost.model)} · total $${esc(s.cost.total_usd)}</div>`;
+  $('#activity').innerHTML = s.activity.slice().reverse().map(a=>`<div class="log">${esc(a.ts.slice(11))} [${esc(a.agent)}] ${esc(a.event)} ${a.detail?('· '+esc(a.detail.slice(0,50))):''}</div>`).join('');
 }
 function pendingHtml(p){
-  return `<div class="pending"><span class="pill risk-high">high</span> <b>${p.agent}</b> — ${p.action}
-    <div class="mut">Confirm by voice or click with the exact id:</div>
-    <div class="row"><code>APPROVE ${p.action_id}</code>
-      <button onclick="approve('APPROVE ${p.action_id}')">Approve</button>
-      <button onclick="reject('${p.action_id}')">Reject</button></div></div>`;
+  const id = esc(p.action_id);
+  return `<div class="pending"><span class="pill risk-high">high</span> <b>${esc(p.agent)}</b> — ${esc(p.action)}
+    <div class="mut">Confirm by voice, text or click with the exact id:</div>
+    <div class="row"><code>APPROVE ${id}</code>
+      <button onclick="approve('APPROVE ${id}')">Approve</button>
+      <button onclick="reject('${id}')">Reject</button></div></div>`;
 }
 async function send(){
   const t = $('#text').value.trim(); if(!t) return;
+  // A typed confirmation goes to the approval gate, never to the agents.
+  if(/^approve\b/i.test(t)){ $('#text').value=''; return approve(t); }
   $('#result').innerHTML = '<span class="mut">Adam is routing…</span>';
   const r = await api('/message', {text:t});
-  if(r.error){ $('#result').innerHTML = '<span style="color:var(--danger)">'+r.error+'</span>'; return; }
+  if(r.error){ $('#result').innerHTML = '<span style="color:var(--danger)">'+esc(r.error)+'</span>'; return; }
   $('#result').innerHTML =
-    r.findings.map(f=>`<div class="finding"><b>${f.agent}</b> <span class="${riskClass(f.risk)}">${f.risk}</span><br>${f.text}${f.action?('<br><span class="mut">action:</span> '+f.action):''}</div>`).join('')
-    + `<div style="margin-top:10px"><b>Recommendation</b><pre>${r.summary}</pre></div>`;
+    r.findings.map(f=>`<div class="finding"><b>${esc(f.agent)}</b> <span class="${riskClass(f.risk)}">${esc(f.risk)}</span><br>${esc(f.text)}${f.action?('<br><span class="mut">action:</span> '+esc(f.action)):''}</div>`).join('')
+    + `<div style="margin-top:10px"><b>Recommendation</b><pre>${esc(r.summary)}</pre></div>`;
   refresh();
 }
 async function approve(phrase){ const r = await api('/approve',{phrase}); alert(r.message||(r.ok?'approved':'failed')); refresh(); }
@@ -114,14 +121,26 @@ async function reject(action_id){ await api('/reject',{action_id}); refresh(); }
 async function kill(){ await api('/kill',{}); refresh(); }
 async function reset(){ await api('/reset',{}); refresh(); }
 
-// Voice input via the browser's Web Speech API. The recognised text is only a
-// transcript; a held action still requires the exact "APPROVE <id>" phrase.
+// Spoken approval: only submitted when the transcript contains the full id of a
+// pending action. "approve" on its own, or a garbled id, approves nothing.
+const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
+function voiceApprove(said){
+  const hit = PENDING.find(p => norm(said).includes(norm(p.action_id)));
+  if(hit) return approve('APPROVE ' + hit.action_id);
+  alert('Heard "' + said + '" but no exact action id. Nothing was approved. Say APPROVE and the full id, or click Approve.');
+}
+
+// Voice input via the browser's Web Speech API.
 function voice(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR){ alert('Voice not supported in this browser; type instead.'); return; }
   const rec = new SR(); rec.lang='en-US'; rec.interimResults=false;
   $('#mic').classList.add('live');
-  rec.onresult = e => { $('#text').value = e.results[0][0].transcript; $('#mic').classList.remove('live'); };
+  rec.onresult = e => {
+    const said = e.results[0][0].transcript;
+    $('#mic').classList.remove('live');
+    if(/^\s*approve\b/i.test(said)) voiceApprove(said); else $('#text').value = said;
+  };
   rec.onend = () => $('#mic').classList.remove('live');
   rec.start();
 }
