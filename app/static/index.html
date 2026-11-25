@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Command Center — Demo</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#131a26;--line:#223049;--ink:#e6edf6;--mut:#8aa0bd;--accent:#4f9dff;--warn:#ffb020;--danger:#ff5c6c;--ok:#39d98a}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);background:#0e1420}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .sp{flex:1}
+  button{font:inherit;border:1px solid var(--line);background:#1a2435;color:var(--ink);border-radius:8px;padding:8px 12px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.kill{border-color:var(--danger);color:var(--danger)}
+  .wrap{display:grid;grid-template-columns:260px 1fr 320px;gap:14px;padding:14px;align-items:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .card h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:0 0 10px}
+  .agent{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .risk-high{color:var(--danger);border-color:var(--danger)}
+  .risk-low{color:var(--ok);border-color:var(--ok)}
+  .risk-medium{color:var(--warn);border-color:var(--warn)}
+  .io{display:flex;gap:8px;margin-bottom:12px}
+  .io input{flex:1;background:#0e1420;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:10px}
+  .mic.live{border-color:var(--danger);color:var(--danger)}
+  .finding{border-left:3px solid var(--accent);padding:6px 10px;margin:8px 0;background:#0e1420;border-radius:0 8px 8px 0}
+  .pending{border:1px solid var(--warn);border-radius:8px;padding:8px 10px;margin:8px 0}
+  .pending code{color:var(--warn)}
+  .mut{color:var(--mut)}
+  .row{display:flex;gap:6px;margin-top:6px}
+  .log{font-size:12px;color:var(--mut);border-bottom:1px solid var(--line);padding:4px 0}
+  pre{white-space:pre-wrap;margin:6px 0 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>⬢ AI Command Center <span class="mut">· demo (fake data)</span></h1>
+  <div class="sp"></div>
+  <span id="killState" class="pill risk-low">running</span>
+  <button class="kill" onclick="kill()">◼ Kill switch</button>
+  <button onclick="reset()">Reset</button>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Agents</h2>
+    <div id="agents"></div>
+    <h2 style="margin-top:16px">Open handoffs</h2>
+    <div id="handoffs" class="mut">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Talk to Adam (supervisor)</h2>
+    <div class="io">
+      <input id="text" placeholder="e.g. Pay invoice #A-2231 for $5,000 and add the payee">
+      <button class="mic" id="mic" onclick="voice()">🎤</button>
+      <button onclick="send()">Send</button>
+    </div>
+    <div id="result" class="mut">Supervisor idle. Send a request — specialists are consulted, high-risk actions are held for your approval.</div>
+    <h2 style="margin-top:16px">Pending approvals</h2>
+    <div id="pending" class="mut">None</div>
+  </div>
+
+  <div class="card">
+    <h2>Recent decisions</h2>
+    <div id="decisions" class="mut">—</div>
+    <h2 style="margin-top:16px">Activity &amp; cost</h2>
+    <div id="cost" class="mut"></div>
+    <div id="activity"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+async function api(path, body){
+  const o = {method: body?'POST':'GET'};
+  if(body){o.headers={'Content-Type':'application/json'};o.body=JSON.stringify(body);}
+  const r = await fetch(path,o); return r.json();
+}
+function riskClass(r){return 'pill risk-'+(r||'low');}
+
+async function refresh(){
+  const s = await api('/state');
+  $('#killState').textContent = s.kill?'HALTED':'running';
+  $('#killState').className = 'pill '+(s.kill?'risk-high':'risk-low');
+  $('#agents').innerHTML = s.agents.map(a=>`<div class="agent"><span>${a.title}</span><span class="${riskClass(a.risk)}">${a.risk}</span></div>`).join('');
+  $('#handoffs').innerHTML = s.open_handoffs.length? s.open_handoffs.map(h=>`<div class="log">${h.id}: ${h.from_agent}→${h.to_agent} <span class="mut">(${h.intent})</span></div>`).join('') : '—';
+  $('#pending').innerHTML = s.pending.length? s.pending.map(p=>pendingHtml(p)).join('') : '<span class="mut">None</span>';
+  $('#decisions').innerHTML = s.decisions.length? s.decisions.slice().reverse().map(d=>`<div class="log"><b>${d.status}</b> · ${d.summary.slice(0,90)}…</div>`).join('') : '—';
+  $('#cost').innerHTML = `<div class="log">model ${s.cost.model} · total $${s.cost.total_usd}</div>`;
+  $('#activity').innerHTML = s.activity.slice().reverse().map(a=>`<div class="log">${a.ts.slice(11)} [${a.agent}] ${a.event} ${a.detail?('· '+a.detail.slice(0,50)):''}</div>`).join('');
+}
+function pendingHtml(p){
+  return `<div class="pending"><span class="pill risk-high">high</span> <b>${p.agent}</b> — ${p.action}
+    <div class="mut">Confirm by voice or click with the exact id:</div>
+    <div class="row"><code>APPROVE ${p.action_id}</code>
+      <button onclick="approve('APPROVE ${p.action_id}')">Approve</button>
+      <button onclick="reject('${p.action_id}')">Reject</button></div></div>`;
+}
+async function send(){
+  const t = $('#text').value.trim(); if(!t) return;
+  $('#result').innerHTML = '<span class="mut">Adam is routing…</span>';
+  const r = await api('/message', {text:t});
+  if(r.error){ $('#result').innerHTML = '<span style="color:var(--danger)">'+r.error+'</span>'; return; }
+  $('#result').innerHTML =
+    r.findings.map(f=>`<div class="finding"><b>${f.agent}</b> <span class="${riskClass(f.risk)}">${f.risk}</span><br>${f.text}${f.action?('<br><span class="mut">action:</span> '+f.action):''}</div>`).join('')
+    + `<div style="margin-top:10px"><b>Recommendation</b><pre>${r.summary}</pre></div>`;
+  refresh();
+}
+async function approve(phrase){ const r = await api('/approve',{phrase}); alert(r.message||(r.ok?'approved':'failed')); refresh(); }
+async function reject(action_id){ await api('/reject',{action_id}); refresh(); }
+async function kill(){ await api('/kill',{}); refresh(); }
+async function reset(){ await api('/reset',{}); refresh(); }
+
+// Voice input via the browser's Web Speech API. The recognised text is only a
+// transcript; a held action still requires the exact "APPROVE <id>" phrase.
+function voice(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ alert('Voice not supported in this browser; type instead.'); return; }
+  const rec = new SR(); rec.lang='en-US'; rec.interimResults=false;
+  $('#mic').classList.add('live');
+  rec.onresult = e => { $('#text').value = e.results[0][0].transcript; $('#mic').classList.remove('live'); };
+  rec.onend = () => $('#mic').classList.remove('live');
+  rec.start();
+}
+refresh(); setInterval(refresh, 4000);
+</script>
+</body>
+</html>

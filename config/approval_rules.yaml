@@ -1,0 +1,26 @@
+# Approval rules — editable without touching code.
+# An action whose risk is "high", OR whose text matches any high_risk_pattern,
+# is held at the approval gate and never auto-executed.
+
+auto_approve_risk: [low]          # risk levels that may run on their own (and are logged)
+hold_risk: [high]                 # risk levels that always stop for operator approval
+
+high_risk_patterns:               # case-insensitive substrings that force a hold
+  - pay
+  - transfer
+  - send
+  - delete
+  - grant
+  - revoke
+  - password
+  - api key
+  - deploy
+  - purchase
+
+# Safety: how an operator confirms a held action.
+# The operator must echo the exact action id. A vague "approve" / "yes" / a
+# mis-heard word is NOT accepted (see core/approval.py).
+confirmation:
+  require_exact_action_id: true
+  phrase_prefix: "APPROVE"        # operator says/types: APPROVE <action_id>
+  reject_vague: ["approve", "yes", "ok", "sure", "do it", "go ahead", "confirm"]

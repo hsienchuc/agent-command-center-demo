@@ -1,0 +1,14 @@
+services:
+  command-center:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # persist logs + handoffs across restarts; swap in real agent files live
+      - ./logs:/app/logs
+      - ./handoffs:/app/handoffs
+      - ./agents:/app/agents
+      - ./config:/app/config
+    restart: unless-stopped

@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+logs/*.jsonl
+logs/KILL
+handoffs/*.json
+handoffs/done/*.json
+.venv/
